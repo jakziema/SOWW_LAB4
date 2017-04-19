@@ -1,0 +1,185 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
+#include <omp.h>
+#include <sys/time.h>
+#define PACKET_COUNT 1000000
+#define RESOLUTION 10000000
+
+
+typedef struct {
+void *data; 
+} t_data;
+typedef struct {
+void *result;
+} t_result;
+double dtime()
+{
+double tseconds = 0.0;
+struct timeval mytime;
+gettimeofday(&mytime,(struct timezone*)0);
+tseconds = (double)(mytime.tv_sec +mytime.tv_usec*1.0e-6);
+return( tseconds );
+}
+double f(double x) { // the function to be integrated
+return sin(x)*sin(x)/x;
+}
+
+
+void process(t_data data,t_result result) {
+double* ptr = (double*) data.data;
+double r_a = (double)*(ptr);
+double r_b = (double)*(ptr+1);
+double integrate=0;
+double r_length=(r_b-r_a)/RESOLUTION;
+double x=r_a;
+int i;
+// a simple implementation of the integrate
+for(i=0;i<RESOLUTION;i++) {
+integrate+=r_length*f(x);
+x+=r_length;
+}
+*((double *)result.result)=integrate; // store the result
+}
+
+void process2(int num,t_result result) {
+int i;
+int res;
+res = 1;
+// a simple implementation of the integrate
+for (i=2;i<=num/2;i++)
+{
+  if (num%i==0)
+  {
+    res=0;
+    break;
+  }
+  if(i*i>=num)
+    break;
+}
+
+*((double *)result.result)=(double)res;
+//*((double *)result.result)=1.0;// store the result
+
+}
+
+t_result *allocate_results(int *packet_count) {
+int i;
+// prepare space for results
+t_result *r_results=(t_result *)malloc(sizeof(t_result)*PACKET_COUNT);
+if (r_results==NULL) {
+perror("Not enough memory");
+exit(-1);
+} 
+
+ for(i=0;i<PACKET_COUNT;i++) {
+r_results[i].result=malloc(sizeof(double));
+if (r_results[i].result==NULL) {
+perror("Not enough memory");
+exit(-1);
+}
+}
+*packet_count=PACKET_COUNT;
+return r_results;
+}
+t_data *generate_data(int *packet_count) {
+// prepare the input data
+// i.e. the given range is to be divided into packets
+int i;
+double a=1,b=100000000;
+double packet_size=(b-a)/PACKET_COUNT;
+t_data *p_packets;
+double *p_data;
+double r_a,r_b;
+// prepare PACKET_COUNT number of packets
+t_data *packets=(t_data *)malloc(sizeof(t_data)*PACKET_COUNT);
+if (packets==NULL) {
+perror("Not enough memory");
+exit(-1);
+}
+r_a=a;
+r_b=a+packet_size;
+p_packets=packets; // pointer to the beginning of the packets
+for(i=0;i<PACKET_COUNT;i++) {
+packets[i].data=malloc(2*sizeof(double));
+if (packets[i].data==NULL) {
+perror("Not enough memory");
+exit(-1);
+}
+// populate the packet with the data
+p_data=(double *)packets[i].data;
+*p_data=r_a;
+*(p_data+1)=r_b; 
+ r_a+=packet_size;
+r_b+=packet_size;
+}
+*packet_count=PACKET_COUNT;
+return packets;
+}
+t_data *data;
+t_result *results;
+main(int argc,char **argv) {
+// prepare the input data
+// i.e. the given range is to be divided into packets
+// now the main processing loop using OpenMP
+int counter;
+int my_data;
+double result;
+int i;
+int packet_count;
+int results_count;
+double t_start,t_stop,t_total,t_current,t_min;
+int t_counter=0;
+t_min=100000000;
+
+int liczby[1000000];
+int a;
+FILE *myfile;
+myfile=fopen("prime_input", "r");
+for(a=0;a<1000000;a++)
+fscanf(myfile,"%d",&liczby[a]);
+fclose(myfile);
+
+do {
+// generate input data
+data=generate_data(&packet_count);
+// allocate memory for results
+results=allocate_results(&results_count);
+counter=0;
+t_start=dtime();
+// launch threads in parallel – the number will be set using an environment variable
+#pragma omp parallel private(my_data) shared(counter) 
+ {
+do {
+// each thread will try to get its data from the available list - synchronization isneeded
+#pragma omp critical
+{
+my_data=counter;
+counter++; // also write result to the counter
+}
+// process and store result -- this can be done without synchronization
+if (my_data<PACKET_COUNT)
+  if (my_data<1000000)
+//process(data[my_data],results[my_data]); // note that processing
+  process2(liczby[my_data],results[my_data]);
+// may take various times for various data packets
+} while (counter<PACKET_COUNT); // otherwise simply exit because
+// there are no more data packets to process
+}
+t_stop=dtime(); // stop benchmarking
+#pragma omp barrier
+// now just add results
+result=0;
+for(i=0;i<PACKET_COUNT;i++) {
+result+=*((double *)results[i].result);
+}
+t_counter++;
+t_current=t_stop-t_start;
+if (t_current<t_min)
+t_min=t_current;
+// repeat a few times if the total execution time is short!
+} while ((t_counter<4) && (t_current<100));
+printf("\nFinished");
+printf("\nThe total number of prime numbers is %.5f\n",result);
+printf("\nTotal time elapsed=%.8f\n",t_min);
+}
